@@ -1,6 +1,5 @@
 use crate::{
     authenticate_token::AuthenticationGuard,
-    github_oauth::{get_github_oauth_token, get_github_user},
     google_oauth::{get_google_user, request_token},
     model::{AppState, LoginUserSchema, QueryCode, RegisterUserSchema, TokenClaims, User},
     response::{FilteredUser, UserData, UserResponse},
@@ -16,7 +15,7 @@ use uuid::Uuid;
 
 #[get("/healthchecker")]
 async fn health_checker_handler() -> impl Responder {
-    const MESSAGE: &str = "Implement Google and GitHub OAuth2 in Rust";
+    const MESSAGE: &str = "How to Implement Google OAuth2 in Rust";
 
     HttpResponse::Ok().json(serde_json::json!({"status": "success", "message": MESSAGE}))
 }
@@ -209,100 +208,6 @@ async fn google_oauth_handler(
     response.finish()
 }
 
-#[get("/sessions/oauth/github")]
-async fn github_oauth_handler(
-    query: web::Query<QueryCode>,
-    data: web::Data<AppState>,
-) -> impl Responder {
-    let code = &query.code;
-    let state = &query.state;
-
-    if code.is_empty() {
-        return HttpResponse::Unauthorized().json(
-            serde_json::json!({"status": "fail", "message": "Authorization code not provided!"}),
-        );
-    }
-
-    let token_response = get_github_oauth_token(code.as_str(), &data).await;
-    if token_response.is_err() {
-        let message = token_response.err().unwrap().to_string();
-        return HttpResponse::BadGateway()
-            .json(serde_json::json!({"status": "fail", "message": message}));
-    }
-
-    let token_response = token_response.unwrap();
-    println!("Bearer {}", token_response.access_token);
-    let github_user = get_github_user(&token_response.access_token).await;
-    if github_user.is_err() {
-        let message = github_user.err().unwrap().to_string();
-        return HttpResponse::BadGateway()
-            .json(serde_json::json!({"status": "fail", "message": message}));
-    }
-
-    let github_user = github_user.unwrap();
-
-    let mut vec = data.db.lock().unwrap();
-    let email = github_user.email.to_lowercase();
-    let user = vec.iter_mut().find(|user| user.email == email);
-
-    let user_id: String;
-
-    if user.is_some() {
-        let user = user.unwrap();
-        user_id = user.id.to_owned().unwrap();
-        user.email = email.to_owned();
-        user.photo = github_user.avatar_url;
-        user.updatedAt = Some(Utc::now());
-    } else {
-        let datetime = Utc::now();
-        let id = Uuid::new_v4();
-        user_id = id.to_owned().to_string();
-        let user_data = User {
-            id: Some(id.to_string()),
-            name: github_user.login,
-            verified: true,
-            email,
-            provider: "GitHub".to_string(),
-            role: "user".to_string(),
-            password: "".to_string(),
-            photo: github_user.avatar_url,
-            createdAt: Some(datetime),
-            updatedAt: Some(datetime),
-        };
-
-        vec.push(user_data.to_owned());
-    }
-
-    let jwt_secret = data.env.jwt_secret.to_owned();
-    let now = Utc::now();
-    let iat = now.timestamp() as usize;
-    let exp = (now + Duration::minutes(data.env.jwt_max_age)).timestamp() as usize;
-    let claims: TokenClaims = TokenClaims {
-        sub: user_id,
-        exp,
-        iat,
-    };
-
-    let token = encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(jwt_secret.as_ref()),
-    )
-    .unwrap();
-
-    let cookie = Cookie::build("token", token)
-        .path("/")
-        .max_age(ActixWebDuration::new(60 * data.env.jwt_max_age, 0))
-        .http_only(true)
-        .finish();
-
-    let frontend_origin = data.env.client_origin.to_owned();
-    let mut response = HttpResponse::Found();
-    response.append_header((LOCATION, format!("{}{}", frontend_origin, state)));
-    response.cookie(cookie);
-    response.finish()
-}
-
 #[get("/auth/logout")]
 async fn logout_handler(_: AuthenticationGuard) -> impl Responder {
     let cookie = Cookie::build("token", "")
@@ -357,7 +262,6 @@ pub fn config(conf: &mut web::ServiceConfig) {
         .service(register_user_handler)
         .service(login_user_handler)
         .service(google_oauth_handler)
-        .service(github_oauth_handler)
         .service(logout_handler)
         .service(get_me_handler);
 
