@@ -1,7 +1,6 @@
 mod authenticate_token;
 mod config;
 mod github_oauth;
-mod google_oauth;
 mod handler;
 mod model;
 mod response;
